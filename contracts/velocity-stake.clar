@@ -286,3 +286,69 @@
     )
   )
 )
+
+
+(define-public (emergency-withdraw (token <sbtc-token-trait>))
+  (begin
+    (asserts! (var-get emergency-mode) ERR_NOT_AUTHORIZED)
+    (asserts! (is-valid-token token) ERR_NOT_AUTHORIZED)
+
+    (let ((current-deposit (default-to u0 (map-get? user-deposits tx-sender))))
+      (asserts! (> current-deposit u0) ERR_INSUFFICIENT_BALANCE)
+
+      (try! (as-contract (contract-call? token transfer current-deposit (as-contract tx-sender)
+        tx-sender
+      )))
+
+      (map-set user-deposits tx-sender u0)
+      (var-set total-liquidity (- (var-get total-liquidity) current-deposit))
+      (ok true)
+    )
+  )
+)
+
+;; Admin Functions
+(define-public (slash-address (address principal))
+  (begin
+    (asserts! (is-authorized) ERR_NOT_AUTHORIZED)
+    (asserts! (is-valid-address address) ERR_NOT_AUTHORIZED)
+
+    (let (
+        (current-deposit (default-to u0 (map-get? user-deposits address)))
+        (slash-amount (/ (* current-deposit SLASH_RATE) u100))
+      )
+      (asserts! (> current-deposit u0) ERR_INSUFFICIENT_BALANCE)
+
+      (map-set slashed-addresses address true)
+      (map-set user-deposits address (- current-deposit slash-amount))
+      (var-set total-liquidity (- (var-get total-liquidity) slash-amount))
+      (ok true)
+    )
+  )
+)
+
+;; READ-ONLY FUNCTIONS
+
+(define-read-only (get-user-info (user principal))
+  (ok {
+    deposit: (default-to u0 (map-get? user-deposits user)),
+    rewards: (unwrap-panic (calculate-rewards user)),
+    staking-time: (default-to u0 (map-get? staking-time user)),
+    is-slashed: (default-to false (map-get? slashed-addresses user)),
+    cooldown-end: (default-to u0 (map-get? cooldown-period user)),
+  })
+)
+
+(define-read-only (get-pool-info)
+  (ok {
+    total-liquidity: (var-get total-liquidity),
+    total-rewards: (var-get total-rewards),
+    is-paused: (var-get pool-paused),
+    emergency-mode: (var-get emergency-mode),
+    current-time: stacks-block-height,
+  })
+)
+
+(define-read-only (get-delegation-info (delegator principal))
+  (ok (map-get? delegation-info { delegator: delegator }))
+)
