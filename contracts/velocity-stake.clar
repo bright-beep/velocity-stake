@@ -197,3 +197,92 @@
     (ok true)
   )
 )
+
+;; Core Staking Functions
+(define-public (deposit
+    (amount uint)
+    (token <sbtc-token-trait>)
+  )
+  (begin
+    (try! (check-initialized))
+    (try! (check-not-paused))
+    (asserts! (is-valid-token token) ERR_NOT_AUTHORIZED)
+    (asserts! (>= amount MINIMUM_DEPOSIT) ERR_INVALID_AMOUNT)
+    (asserts! (<= (+ (var-get total-liquidity) amount) MAXIMUM_POOL_SIZE)
+      ERR_POOL_FULL
+    )
+
+    (try! (update-reward tx-sender))
+
+    (let ((cooldown-end (default-to u0 (map-get? cooldown-period tx-sender))))
+      (asserts! (<= cooldown-end stacks-block-height) ERR_COOLDOWN_ACTIVE)
+    )
+
+    (try! (contract-call? token transfer amount tx-sender (as-contract tx-sender)))
+
+    (let (
+        (current-deposit (default-to u0 (map-get? user-deposits tx-sender)))
+        (new-deposit (+ current-deposit amount))
+      )
+      (map-set user-deposits tx-sender new-deposit)
+      (var-set total-liquidity (+ (var-get total-liquidity) amount))
+      (map-set staking-time tx-sender stacks-block-height)
+      (ok true)
+    )
+  )
+)
+
+;; Delegation System
+(define-public (delegate-stake (delegate-to principal))
+  (begin
+    (asserts! (not (is-eq tx-sender delegate-to)) ERR_INVALID_DELEGATION)
+    (map-set delegation-info { delegator: tx-sender } { delegate: delegate-to })
+    (ok true)
+  )
+)
+
+;; Withdrawal Management
+(define-public (start-withdrawal (amount uint))
+  (begin
+    (try! (check-initialized))
+    (try! (check-not-paused))
+
+    (let (
+        (current-deposit (default-to u0 (map-get? user-deposits tx-sender)))
+        (current-time stacks-block-height)
+      )
+      (asserts! (>= current-deposit amount) ERR_INSUFFICIENT_BALANCE)
+      (map-set cooldown-period tx-sender (+ current-time COOLDOWN_PERIOD))
+      (ok true)
+    )
+  )
+)
+
+(define-public (complete-withdrawal
+    (amount uint)
+    (token <sbtc-token-trait>)
+  )
+  (begin
+    (try! (check-initialized))
+    (try! (check-not-paused))
+    (asserts! (is-valid-token token) ERR_NOT_AUTHORIZED)
+
+    (let (
+        (current-deposit (default-to u0 (map-get? user-deposits tx-sender)))
+        (cooldown-end (default-to u0 (map-get? cooldown-period tx-sender)))
+        (current-time stacks-block-height)
+      )
+      (asserts! (>= current-deposit amount) ERR_INSUFFICIENT_BALANCE)
+      (asserts! (>= current-time cooldown-end) ERR_COOLDOWN_ACTIVE)
+
+      (try! (update-reward tx-sender))
+
+      (try! (as-contract (contract-call? token transfer amount (as-contract tx-sender) tx-sender)))
+
+      (map-set user-deposits tx-sender (- current-deposit amount))
+      (var-set total-liquidity (- (var-get total-liquidity) amount))
+      (map-delete cooldown-period tx-sender)
+      (ok true)
+    )
+  )
+)
