@@ -102,3 +102,98 @@
   principal
   bool
 )
+
+;; Delegation System
+(define-map delegation-info
+  { delegator: principal }
+  { delegate: principal }
+)
+
+;; PRIVATE FUNCTIONS
+
+;; Access Control Functions
+(define-private (is-authorized)
+  (or
+    (is-eq tx-sender CONTRACT_OWNER)
+    (is-eq tx-sender POOL_ADMIN)
+  )
+)
+
+(define-private (is-valid-token (token <sbtc-token-trait>))
+  (is-eq (contract-of token) (var-get sbtc-token-contract))
+)
+
+(define-private (is-valid-address (address principal))
+  (and
+    (not (is-eq address CONTRACT_OWNER))
+    (not (is-eq address (as-contract tx-sender)))
+    (not (is-eq address POOL_ADMIN))
+  )
+)
+
+;; State Validation Functions
+(define-private (check-initialized)
+  (ok (asserts! (var-get contract-initialized) ERR_NOT_INITIALIZED))
+)
+
+(define-private (check-not-paused)
+  (ok (asserts! (not (var-get pool-paused)) ERR_POOL_PAUSED))
+)
+
+;; Reward Calculation Engine
+(define-private (calculate-tier-multiplier (staking-duration uint))
+  (if (>= staking-duration TIER2_THRESHOLD)
+    (+ u100 TIER2_BONUS)
+    (if (>= staking-duration TIER1_THRESHOLD)
+      (+ u100 TIER1_BONUS)
+      u100
+    )
+  )
+)
+
+(define-private (calculate-rewards (user principal))
+  (let (
+      (user-balance (default-to u0 (map-get? user-deposits user)))
+      (user-reward-debt (default-to u0 (map-get? user-reward-paid user)))
+    )
+    (ok (if (> user-balance u0)
+      (* user-balance (- (var-get reward-per-token) user-reward-debt))
+      u0
+    ))
+  )
+)
+
+(define-private (update-reward (user principal))
+  (let (
+      (current-time stacks-block-height)
+      (time-delta (- current-time (var-get last-update-time)))
+      (user-balance (default-to u0 (map-get? user-deposits user)))
+      (staking-duration (- current-time (default-to u0 (map-get? staking-time user))))
+      (tier-multiplier (calculate-tier-multiplier staking-duration))
+    )
+    (if (> (var-get total-liquidity) u0)
+      (let ((new-reward-per-token (+ (var-get reward-per-token)
+          (* (* (* REWARD_RATE time-delta) tier-multiplier) u1000000)
+        )))
+        (var-set reward-per-token new-reward-per-token)
+        (var-set last-update-time current-time)
+        (map-set user-reward-paid user new-reward-per-token)
+        (ok true)
+      )
+      ERR_REWARD_UPDATE_FAILED
+    )
+  )
+)
+
+;; PUBLIC FUNCTIONS
+
+;; Protocol Initialization
+(define-public (initialize)
+  (begin
+    (asserts! (is-authorized) ERR_NOT_AUTHORIZED)
+    (asserts! (not (var-get contract-initialized)) ERR_ALREADY_INITIALIZED)
+    (var-set contract-initialized true)
+    (var-set last-update-time stacks-block-height)
+    (ok true)
+  )
+)
